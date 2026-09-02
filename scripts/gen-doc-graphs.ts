@@ -257,6 +257,15 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Configuration carries references to secrets; providers own the values. Consumers resolve per operation, so a rotated credential reaches the very next request; the settings controller exposes value-free views and write-only storage.',
   },
   {
+    key: 'blackboard',
+    pkg: 'blackboard',
+    title: 'Engagement-blackboard seam',
+    mode: 'seam',
+    implementations: ['blackboard-local'],
+    consumers: ['tool-blackboard'],
+    note: 'One shared board per engagement root: add-or-merge credential/host/finding/attack-path vocabulary with cross-process serialized file storage and a rendered operator dashboard; secrets are model-visible under the engagement-lab trust boundary.',
+  },
+  {
     key: 'authorization',
     pkg: 'authorization',
     title: 'Authorization flow registry',

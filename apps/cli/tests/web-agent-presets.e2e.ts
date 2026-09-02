@@ -255,7 +255,8 @@ describe('the shipped Web composition', () => {
       // catalog assertion guards the copy: a row that registers into the wrong
       // layer mounts cleanly and simply contributes nothing.
       expect(toolNames(ctx, handle.agent).filter(name => name !== 'glob' && name !== 'grep')).toEqual([
-        'ask_user_question', 'bash', 'create_goal', 'edit', 'exit_plan_mode',
+        'ask_user_question', 'bash', 'blackboard_add_attack_step', 'blackboard_add_credential', 'blackboard_add_finding',
+        'blackboard_list', 'blackboard_upsert_host', 'blackboard_verify_credential', 'create_goal', 'edit', 'exit_plan_mode',
         'get_goal', 'interrupt_agent', 'job_kill', 'job_list', 'job_output', 'list_agents', 'ralph', 'read', 'read_image', 'send_message', 'skill',
         'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_fetch', 'web_search',
         'workflow', 'write',

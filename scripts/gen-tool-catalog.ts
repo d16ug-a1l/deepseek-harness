@@ -41,6 +41,8 @@ import * as SkillFileSystem from '@deepseek-ai/dsh-skill-filesystem'
 import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
 import * as ToolAskUser from '@deepseek-ai/dsh-tool-ask-user'
 import * as ToolBash from '@deepseek-ai/dsh-tool-bash'
+import LocalBlackboardStore from '@deepseek-ai/dsh-blackboard-local'
+import * as ToolBlackboard from '@deepseek-ai/dsh-tool-blackboard'
 import * as ToolPwsh from '@deepseek-ai/dsh-tool-pwsh'
 import * as ToolBashPersistent from '@deepseek-ai/dsh-tool-bash-persistent'
 import * as ToolPwshPersistent from '@deepseek-ai/dsh-tool-pwsh-persistent'
@@ -240,6 +242,22 @@ const TOOL_PACKAGES: ToolPackage[] = [
     },
     note:
       'The bash tool is the model-facing consumer of the bash executor seam. A `run_in_background` run registers with the generic `ctx.jobs` runtime and is collected/stopped through the `job_*` tools from `@deepseek-ai/dsh-tool-jobs`; the `enableRunInBackground` config (default true) removes the parameter entirely when disabled.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-blackboard',
+    dir: 'tool-blackboard',
+    source: 'packages/pentest/tool-blackboard/src/index.ts',
+    requires: ['ctx.tools', 'ctx.blackboard', 'owning Agent session (execution time)'],
+    writes: ['tool/call', 'blackboard/updated after the provider commits', 'tool/result'],
+    async mount(ctx) {
+      // The provider is mounted only to satisfy the inject: registration alone
+      // is schema-complete and no engagement root is touched, so no board file
+      // is created during the harvest.
+      await ctx.plugin(LocalBlackboardStore, {})
+      await ctx.plugin(ToolBlackboard)
+    },
+    note:
+      'The six blackboard tools are the model-facing consumer of the engagement-blackboard seam (`packages/pentest/`): each call resolves its engagement root from the calling agent session, and captured secrets are tool arguments and results by design under the engagement-lab trust boundary.',
   },
   {
     pkg: '@deepseek-ai/dsh-tool-pwsh',

@@ -549,6 +549,49 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'blackboard',
+    summary: 'Abstract engagement-blackboard service.',
+    description: 'Abstract engagement-blackboard service. Every method takes the engagement `root` explicitly: one process can serve sessions in different workspaces, and the root — not the plugin instance — decides which board a call touches.\n\nWrite methods are add-or-merge: recording the same credential identity (domain, username, secret type) twice extends the existing entry rather than duplicating it, because two execution flows regularly capture the same account through different attacks. All writes are serialized by the provider per root, so a concurrent subagent can never lose another flow\'s commit.',
+    methods: [
+      {
+        signature: 'abstract snapshot(root: string): Promise<Blackboard>',
+        description: 'Read the current board for one root. Absent storage reads as emptyBlackboard; a board another flow just wrote is visible to the next snapshot.',
+        parameters: [{ name: 'root', description: 'engagement root (absolute workspace directory).' }],
+        returns: 'the current blackboard.',
+      },
+      {
+        signature: 'abstract addCredential( root: string, input: CredentialInput, ): Promise<EntryChange<BlackboardCredential>>',
+        description: 'Record a captured credential, merging into an existing entry of the same identity (domain, username, secret type) when one exists: the new secret, source, and notes replace the stored ones while status and verification history survive. The entry starts `unverified`; verification is a separate act through setCredentialStatus.',
+        parameters: [{ name: 'root', description: 'engagement root.' }, { name: 'input', description: 'the captured credential.' }],
+        returns: 'the stored entry and whether this call created it.',
+      },
+      {
+        signature: 'abstract setCredentialStatus( root: string, id: CredentialEntryId, status: CredentialStatus, verifiedAgainst?: string, ): Promise<BlackboardCredential>',
+        description: 'Set one credential\'s verification state. `verified` requires `verifiedAgainst` naming the host or DC the check succeeded against; the target is appended to the entry\'s list rather than replacing it.',
+        parameters: [{ name: 'root', description: 'engagement root.' }, { name: 'id', description: 'the credential entry to update.' }, { name: 'status', description: 'the new status.' }, { name: 'verifiedAgainst', description: 'the host or DC a successful check ran against; required for `verified`.' }],
+        returns: 'the entry after the update.',
+      },
+      {
+        signature: 'abstract upsertHost(root: string, input: HostInput): Promise<EntryChange<BlackboardHost>>',
+        description: 'Record or update a host, keyed by IP address: supplied fields replace stored ones, omitted fields survive. Access only ever ratchets upward (`none` < `user` < `admin`) — a later caller that merely reached a host cannot erase an earlier caller\'s privilege gain.',
+        parameters: [{ name: 'root', description: 'engagement root.' }, { name: 'input', description: 'the host facts to record.' }],
+        returns: 'the stored entry and whether this call created it.',
+      },
+      {
+        signature: 'abstract addFinding(root: string, input: FindingInput): Promise<BlackboardFinding>',
+        description: 'Record a finding. Findings are append-only: two flows reporting the same issue produce two entries whose evidence differs, and the report phase reconciles them.',
+        parameters: [{ name: 'root', description: 'engagement root.' }, { name: 'input', description: 'the finding to record.' }],
+        returns: 'the stored entry.',
+      },
+      {
+        signature: 'abstract addAttackStep(root: string, input: AttackStepInput): Promise<AttackPathStep>',
+        description: 'Append one step to the attack-path narrative; the provider assigns the next step number.',
+        parameters: [{ name: 'root', description: 'engagement root.' }, { name: 'input', description: 'the step to append.' }],
+        returns: 'the stored step.',
+      },
+    ],
+  },
+  {
     key: 'clientModules',
     summary: 'The web plugin table service: incremental `dsh.client` scan + wire composition + bundle route + index injection rows.',
     description: 'The web plugin table service: incremental `dsh.client` scan + wire composition + bundle route + index injection rows. Construction runs the activation scan synchronously — a malformed declaration or missing bundle among the already-loaded entries aggregates into one loud throw (FAILED fiber; the boot activation audit reports it).',
@@ -3001,6 +3044,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'key', description: 'the credential record the finished attempt was authorizing.' }, { name: 'settlement', description: 'how it ended, including the `failed` case its caller sees as a thrown error.' }],
   },
   {
+    name: 'blackboard/updated',
+    mode: 'emit',
+    signature: '\'blackboard/updated\'(root: string): void',
+    summary: 'Committed change to one engagement root\'s blackboard: a provider write or an external edit observed in storage.',
+    description: 'Committed change to one engagement root\'s blackboard: a provider write or an external edit observed in storage. Listener failures are contained and logged without changing the committed operation\'s outcome, except `INVARIANT`-coded failures, which rethrow after every listener ran.',
+    parameters: [{ name: 'root', description: 'the engagement root whose blackboard changed.' }],
+  },
+  {
     name: 'commands/change',
     mode: 'emit',
     signature: '\'commands/change\'(): void',
@@ -3501,6 +3552,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type AttachmentId = Branded<\'AttachmentId\'>;',
   },
   {
+    name: 'AttackPathStep',
+    declaration: 'export interface AttackPathStep {\n    step: number;\n    from: string;\n    to: string;\n    via: string;\n    status: AttackStepStatus;\n}',
+  },
+  {
+    name: 'AttackStepInput',
+    declaration: 'export interface AttackStepInput {\n    from: string;\n    to: string;\n    via: string;\n    status?: AttackStepStatus;\n}',
+  },
+  {
+    name: 'AttackStepStatus',
+    declaration: 'export type AttackStepStatus = \'hypothesis\' | \'verified\';',
+  },
+  {
     name: 'AuthorizationEntry',
     declaration: 'export interface AuthorizationEntry {\n    key: CredentialKey;\n    label: string;\n    methods: readonly AuthorizationMethod[];\n    inFlight: boolean;\n}',
   },
@@ -3563,6 +3626,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'BashEnvVariableInfo',
     declaration: 'export interface BashEnvVariableInfo extends BashEnvVariable {\n    contributor: string;\n    key: DshEnvironmentKey;\n}',
+  },
+  {
+    name: 'Blackboard',
+    declaration: 'export interface Blackboard {\n    version: 1;\n    credentials: BlackboardCredential[];\n    hosts: BlackboardHost[];\n    findings: BlackboardFinding[];\n    attackPath: AttackPathStep[];\n}',
+  },
+  {
+    name: 'BlackboardCredential',
+    declaration: 'export interface BlackboardCredential {\n    id: CredentialEntryId;\n    username: string;\n    domain?: string;\n    secretType: SecretType;\n    secret: string;\n    source: string;\n    status: CredentialStatus;\n    verifiedAgainst: string[];\n    notes?: string;\n}',
+  },
+  {
+    name: 'BlackboardFinding',
+    declaration: 'export interface BlackboardFinding {\n    id: FindingId;\n    kind: string;\n    detail: string;\n    evidence?: string;\n}',
+  },
+  {
+    name: 'BlackboardHost',
+    declaration: 'export interface BlackboardHost {\n    ip: string;\n    hostname?: string;\n    os?: string;\n    role?: string;\n    access: HostAccess;\n    ownedBy?: CredentialEntryId;\n    notes?: string;\n}',
   },
   {
     name: 'Branded',
@@ -3797,8 +3876,16 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface CreateTeamTaskRequest {\n    readonly subject: string;\n    readonly description: string;\n    readonly blockedBy?: readonly TeamTaskId[];\n    readonly writeScopes?: readonly string[];\n}',
   },
   {
+    name: 'CredentialEntryId',
+    declaration: 'export type CredentialEntryId = Branded<\'CredentialEntryId\'>;',
+  },
+  {
     name: 'CredentialInfo',
     declaration: 'export interface CredentialInfo {\n    configured: boolean;\n    source?: string;\n    writable: boolean;\n}',
+  },
+  {
+    name: 'CredentialInput',
+    declaration: 'export interface CredentialInput {\n    username: string;\n    domain?: string;\n    secretType: SecretType;\n    secret: string;\n    source: string;\n    notes?: string;\n}',
   },
   {
     name: 'CredentialKey',
@@ -3819,6 +3906,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'CredentialRef',
     declaration: 'export type CredentialRef = Branded<\'CredentialRef\'>;',
+  },
+  {
+    name: 'CredentialStatus',
+    declaration: 'export type CredentialStatus = \'unverified\' | \'verified\' | \'expired\' | \'rejected\';',
   },
   {
     name: 'DeepSeekLlmApiExtensionMap',
@@ -3949,6 +4040,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface EncodedImageAttachment {\n    mediaType: ImageMediaType;\n    data: string;\n    name?: string;\n}',
   },
   {
+    name: 'EntryChange',
+    declaration: 'export interface EntryChange<T> {\n    entry: T;\n    created: boolean;\n}',
+  },
+  {
     name: 'EpochHeader',
     declaration: 'export interface EpochHeader {\n    config: LlmCallConfig;\n    adapterDefaults?: LlmCallConfigAdapterDefaults;\n    system?: string;\n    tools?: ToolSchema[];\n}',
   },
@@ -3967,6 +4062,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'FileReferenceCandidate',
     declaration: 'export interface FileReferenceCandidate {\n    path: string;\n    kind: \'file\' | \'directory\';\n}',
+  },
+  {
+    name: 'FindingId',
+    declaration: 'export type FindingId = Branded<\'FindingId\'>;',
+  },
+  {
+    name: 'FindingInput',
+    declaration: 'export interface FindingInput {\n    kind: string;\n    detail: string;\n    evidence?: string;\n}',
   },
   {
     name: 'FinishReason',
@@ -4071,6 +4174,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'GrantRecord',
     declaration: 'export interface GrantRecord {\n    readonly kind: \'grant\';\n    readonly payload: unknown;\n}',
+  },
+  {
+    name: 'HostAccess',
+    declaration: 'export type HostAccess = \'none\' | \'user\' | \'admin\';',
+  },
+  {
+    name: 'HostInput',
+    declaration: 'export interface HostInput {\n    ip: string;\n    hostname?: string;\n    os?: string;\n    role?: string;\n    access?: HostAccess;\n    ownedBy?: CredentialEntryId;\n    notes?: string;\n}',
   },
   {
     name: 'ImageAttachmentLimits',
@@ -4739,6 +4850,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SearchResultView',
     declaration: 'export type SearchResultView = SearchMatchesResultView | SearchPathsResultView;',
+  },
+  {
+    name: 'SecretType',
+    declaration: 'export type SecretType = \'password\' | \'nthash\' | \'aeskey\' | \'ticket\';',
   },
   {
     name: 'SendTeamMessageRequest',
