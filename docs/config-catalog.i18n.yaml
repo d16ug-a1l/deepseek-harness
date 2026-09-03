@@ -4,3 +4,4 @@
 #   pnpm run verify-translation-pairing --write docs/config-catalog.md
 config-catalog.md: b9a9f5cc8f817bdffee388740a6f0f3948f719d6
 config-catalog.zh.md: 1ca779bbd5f806eb14ed4f363be9b905718c6419
+
