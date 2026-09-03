@@ -23,6 +23,7 @@
 | `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`、`ctx.codeRuntime (execution time)`、`ctx.systemPrompt` | `tool/call`、`one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`、`tool/result` | - | 在 `mode: ptc`／`mode: both` 下，它由工具注册表所有，作为可过滤能力层之外的保留传输机制（参见 PTC mode Agent Note）。在 `ptc` 下，它是注册表对协议格式（wire format）的唯一贡献；其他可见能力在使用已加载运行时语言生成的 SDK 章节中声明。程序通过 binding 调用这些能力，调用按照原生并发约定调度：启动顺序和策略遵循提交顺序，并发安全的函数体最多重叠执行 `maxParallelSubCalls` 个。调用会重新进入完整且受守卫保护的工具流水线，并将每个嵌套执行关联到此外层结果。 |
 | `@deepseek-ai/dsh-plan-mode` | `exit_plan_mode` | `ctx.tools`、`ctx.systemPrompt`、`ctx.userQuestions (execution time, opportunistic)` | `tool/call`、`plan/mode inactive on an approved review`、`tool/result` | - | 规划未激活时，exit_plan_mode 仍保留在面向模型的 schema 中，这样状态转换不会在规划策略变更之外额外造成工具目录变动。其执行路径会拒绝规划模式之外的调用；在规划模式下，它通过用户交互 seam 提交计划（批准／根据反馈继续规划），批准后会在步骤边界记录规划模式已停用。 |
 | `@deepseek-ai/dsh-tool-bash` | `bash` | `ctx.tools`、`ctx.shell`、`ctx.systemPrompt`、`ctx.shellEnv`、`ctx.jobs at call time for run_in_background` | `tool/call`、`tool/result` | - | bash 工具是 bash 执行器 seam 面向模型的消费方。使用 `run_in_background` 的运行会注册到通用 `ctx.jobs` 运行时，并通过 `job_*` 工具（来自 `@deepseek-ai/dsh-tool-jobs`）收集／停止；禁用 `enableRunInBackground` 配置（默认为 true）后，该参数会被完全移除。 |
+| `@deepseek-ai/dsh-tool-blackboard` | `blackboard_add_attack_step`、`blackboard_add_credential`、`blackboard_add_finding`、`blackboard_list`、`blackboard_upsert_host`、`blackboard_verify_credential` | `ctx.tools`、`ctx.blackboard`、`owning Agent session (execution time)` | `tool/call`、`blackboard/updated after the provider commits`、`tool/result` | - | 六个黑板工具是作战黑板能力缝（`packages/pentest/`）面向模型的消费方：每次调用从发起调用的 agent 会话解析作战根目录；在靶场信任边界下，捕获的秘密在设计上就是工具参数与结果。 |
 | `@deepseek-ai/dsh-tool-pwsh` | `pwsh` | `ctx.tools`、`ctx.shell`、`ctx.systemPrompt`、`ctx.shellEnv`、`ctx.jobs at call time for run_in_background` | `tool/call`、`tool/result` | - | pwsh 工具是 Windows 组合中 bash 执行器 seam 的 PowerShell 方言消费方（由 `@deepseek-ai/dsh-pwsh-local` 等 PowerShell 执行器为 `ctx.shell` 提供后端）；除沙箱接口外，它逐项对应 bash 工具调用。使用 `run_in_background` 的运行会注册到通用 `ctx.jobs` 运行时，并通过 `job_*` 工具收集／停止；托管的 `DSH_*` 环境来自 `@deepseek-ai/dsh-shell-env`。每次调用都在新进程中运行，不使用持久 PTY 会话。路径采用原生 `C:\...` 形式，变量采用 `$env:NAME`。 |
 | `@deepseek-ai/dsh-tool-cordis` | `cordis_define`、`cordis_inspect_list`、`cordis_inspect_query`、`cordis_inspect_self`、`cordis_run`、`cordis_stop`、`cordis_undefine` | `ctx.tools`、`ctx.dynamicCordisRunner` | `tool/call`、`tool/result`、`process-local dynamic package lifecycle` | - | 不在任何随产品发布的树中，需要显式选择启用；动态 Package 代码可以访问真实运行时，见 .agents/notes/implemented/feature/2026-07-08-self-referential-cordis-toolset.md。该工具集注入 `@deepseek-ai/dsh-cordis-host-runner` 提供的 `ctx.dynamicCordisRunner`，后者拥有定义注册表和 vm 沙箱；组合缺少它时这些工具不会激活。运行中的 Package 在停止、undefine 或 DSH 重启前可以注册**额外的**模型可见工具；发生这类工具集变化时，系统会记录完整且有变动的请求头。 |
 | `@deepseek-ai/dsh-tool-bash-persistent` | `bash` | `ctx.tools`、`ctx.terminals`、`an owning Agent at execution time` | `tool/call`、`PTY shell state`、`tool/result` | - | 一个按所有者隔离的持久 bash 工具；部署组合提供 PTY 后端，并可覆盖面向模型的环境描述。 |
@@ -221,6 +222,230 @@ ask_user_question 会暂停工具调用，直到当前 UI 提供方返回人类�
 来源：[`packages/shell/tool-bash/src/index.ts`](../packages/shell/tool-bash/src/index.ts)
 
 bash 工具是 bash 执行器 seam 面向模型的消费方。使用 `run_in_background` 的运行会注册到通用 `ctx.jobs` 运行时，并通过 `job_*` 工具（来自 `@deepseek-ai/dsh-tool-jobs`）收集／停止；禁用 `enableRunInBackground` 配置（默认为 true）后，该参数会被完全移除。
+
+<a id="deepseek-aidsh-tool-blackboard"></a>
+
+## `@deepseek-ai/dsh-tool-blackboard`
+
+### `blackboard_add_attack_step`
+
+把攻击路径叙事的一步追加到共享黑板：起点、落点，以及方式。刚执行完的步骤用 `verified`，推断出的下一步用 `hypothesis`。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "from": {
+      "type": "string",
+      "description": "Where the step starts (`internet`, a host, an account)."
+    },
+    "to": {
+      "type": "string",
+      "description": "Where the step lands."
+    },
+    "via": {
+      "type": "string",
+      "description": "How: credential id plus method, or an attack name."
+    },
+    "status": {
+      "type": "string",
+      "description": "hypothesis | verified. Defaults to `verified`.",
+      "enum": [
+        "hypothesis",
+        "verified"
+      ]
+    }
+  },
+  "required": [
+    "from",
+    "to",
+    "via"
+  ]
+}
+```
+
+来源：[`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_add_credential`
+
+在共享作战黑板上记录一条捕获的凭据。再次捕获同一账号（域名、用户名、秘密类型均相同）会合并进既有条目——新的秘密值、来源与备注替换已存内容，验证历史保留。新条目以 `unverified` 开始；认证检查成功或失败后，用 blackboard_verify_credential 上报结果。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "username": {
+      "type": "string",
+      "description": "Account name as captured."
+    },
+    "domain": {
+      "type": "string",
+      "description": "Domain or realm the account belongs to, when known."
+    },
+    "secretType": {
+      "type": "string",
+      "description": "password (cleartext) | nthash (NT hash) | aeskey (Kerberos AES key) | ticket (Kerberos ticket).",
+      "enum": [
+        "password",
+        "nthash",
+        "aeskey",
+        "ticket"
+      ]
+    },
+    "secret": {
+      "type": "string",
+      "description": "The captured secret value."
+    },
+    "source": {
+      "type": "string",
+      "description": "Where it came from — the tool and command, an operator hand-off, or a dump artifact."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-form context (which attack produced it, expiry hints)."
+    }
+  },
+  "required": [
+    "username",
+    "secretType",
+    "secret",
+    "source"
+  ]
+}
+```
+
+来源：[`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_add_finding`
+
+在共享黑板上记录一条作战发现（错误配置、攻击面、工件）。发现项仅追加：同一问题被发现两次会产生两条条目。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "description": "Finding category (`asrep-roastable`, `share`, `path`, `misconfig`, …)."
+    },
+    "detail": {
+      "type": "string",
+      "description": "What was found, in engagement terms."
+    },
+    "evidence": {
+      "type": "string",
+      "description": "Command or artifact path that proves it."
+    }
+  },
+  "required": [
+    "kind",
+    "detail"
+  ]
+}
+```
+
+来源：[`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_list`
+
+读取完整的共享作战黑板：每条已捕获凭据及其验证状态、每台已知主机及其已获访问权限、每条发现项，以及迄今为止的攻击路径。在花费动作之前先查它——其他流已捕获的凭据或访问权限可以立即复用。
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+来源：[`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_upsert_host`
+
+在共享作战黑板上记录或更新一台主机，以 IP 地址为键：提供的字段替换已存字段，省略的字段保留。访问权限只向上递进（none < user < admin）——再次抵达主机无法抹掉先前取得的权限。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "ip": {
+      "type": "string",
+      "description": "Primary address; the entry identity."
+    },
+    "hostname": {
+      "type": "string",
+      "description": "Resolved hostname, when known."
+    },
+    "os": {
+      "type": "string",
+      "description": "Operating system fingerprint, when known."
+    },
+    "role": {
+      "type": "string",
+      "description": "Role in the range (DC, workstation, …), when known."
+    },
+    "access": {
+      "type": "string",
+      "description": "Access level achieved: none | user | admin. Omit to leave the stored level untouched.",
+      "enum": [
+        "none",
+        "user",
+        "admin"
+      ]
+    },
+    "ownedBy": {
+      "type": "string",
+      "description": "Credential entry id (`cred-<n>`) that grants the access."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-form context."
+    }
+  },
+  "required": [
+    "ip"
+  ]
+}
+```
+
+来源：[`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_verify_credential`
+
+上报一条已存凭据的认证检查结果：成功为 `verified`（指明成功所针对的主机或 DC），失败为 `rejected`，曾经有效的秘密失效为 `expired`。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "The credential entry id (`cred-<n>`)."
+    },
+    "status": {
+      "type": "string",
+      "description": "verified | rejected | expired | unverified.",
+      "enum": [
+        "unverified",
+        "verified",
+        "expired",
+        "rejected"
+      ]
+    },
+    "verifiedAgainst": {
+      "type": "string",
+      "description": "The host or DC the successful check ran against; REQUIRED when status is `verified`."
+    }
+  },
+  "required": [
+    "id",
+    "status"
+  ]
+}
+```
+
+来源：[`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+六个黑板工具是作战黑板能力缝（`packages/pentest/`）面向模型的消费方：每次调用从发起调用的 agent 会话解析作战根目录；在靶场信任边界下，捕获的秘密在设计上就是工具参数与结果。
 
 <a id="deepseek-aidsh-tool-pwsh"></a>
 

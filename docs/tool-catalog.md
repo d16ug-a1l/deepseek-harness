@@ -19,6 +19,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`, `ctx.codeRuntime (execution time)`, `ctx.systemPrompt` | `tool/call`, `one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`, `tool/result` | - | Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: ptc` / `mode: both` (see the PTC mode Agent Note). Under `ptc` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result. |
 | `@deepseek-ai/dsh-plan-mode` | `exit_plan_mode` | `ctx.tools`, `ctx.systemPrompt`, `ctx.userQuestions (execution time, opportunistic)` | `tool/call`, `plan/mode inactive on an approved review`, `tool/result` | - | exit_plan_mode stays in the model-facing schema while planning is inactive so transitions add no tool-catalog churn on top of the plan-policy change. Its execute path rejects calls outside plan mode; in plan mode it presents the plan over the user-questions seam (approve / keep planning with feedback), and approval logs plan mode inactive at the step boundary. |
 | `@deepseek-ai/dsh-tool-bash` | `bash` | `ctx.tools`, `ctx.shell`, `ctx.systemPrompt`, `ctx.shellEnv`, `ctx.jobs at call time for run_in_background` | `tool/call`, `tool/result` | - | The bash tool is the model-facing consumer of the bash executor seam. A `run_in_background` run registers with the generic `ctx.jobs` runtime and is collected/stopped through the `job_*` tools from `@deepseek-ai/dsh-tool-jobs`; the `enableRunInBackground` config (default true) removes the parameter entirely when disabled. |
+| `@deepseek-ai/dsh-tool-blackboard` | `blackboard_add_attack_step`, `blackboard_add_credential`, `blackboard_add_finding`, `blackboard_list`, `blackboard_upsert_host`, `blackboard_verify_credential` | `ctx.tools`, `ctx.blackboard`, `owning Agent session (execution time)` | `tool/call`, `blackboard/updated after the provider commits`, `tool/result` | - | The six blackboard tools are the model-facing consumer of the engagement-blackboard seam (`packages/pentest/`): each call resolves its engagement root from the calling agent session, and captured secrets are tool arguments and results by design under the engagement-lab trust boundary. |
 | `@deepseek-ai/dsh-tool-pwsh` | `pwsh` | `ctx.tools`, `ctx.shell`, `ctx.systemPrompt`, `ctx.shellEnv`, `ctx.jobs at call time for run_in_background` | `tool/call`, `tool/result` | - | The pwsh tool is the PowerShell-dialect consumer of the bash executor seam for Windows compositions (a PowerShell executor such as `@deepseek-ai/dsh-pwsh-local` backs `ctx.shell`); it mirrors the bash tool call-for-call minus sandbox controls — `run_in_background` runs register with the generic `ctx.jobs` runtime and are collected/stopped through the `job_*` tools, and the managed `DSH_*` environment comes from `@deepseek-ai/dsh-shell-env`. Each call runs in a fresh process (no persistent PTY session), with native `C:\...` paths and `$env:NAME` variables. |
 | `@deepseek-ai/dsh-tool-cordis` | `cordis_define`, `cordis_inspect_list`, `cordis_inspect_query`, `cordis_inspect_self`, `cordis_run`, `cordis_stop`, `cordis_undefine` | `ctx.tools`, `ctx.dynamicCordisRunner` | `tool/call`, `tool/result`, `process-local dynamic package lifecycle` | - | Not in any shipped tree (a deliberate opt-in — dynamic package code reaches the real runtime, see .agents/notes/implemented/feature/2026-07-08-self-referential-cordis-toolset.md). The toolset injects `ctx.dynamicCordisRunner` from `@deepseek-ai/dsh-cordis-host-runner`, which owns the definition registry and the vm sandbox; a composition missing it never activates the tools. A running package may register ADDITIONAL model-visible tools until it is stopped, undefined, or DSH restarts; a full changed request header logs those tool-set changes. |
 | `@deepseek-ai/dsh-tool-bash-persistent` | `bash` | `ctx.tools`, `ctx.terminals`, `an owning Agent at execution time` | `tool/call`, `PTY shell state`, `tool/result` | - | One owner-isolated persistent bash tool; deployment composition supplies the PTY backend and may override the model-facing environment description. |
@@ -217,6 +218,230 @@ Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs 
 Source: [`packages/shell/tool-bash/src/index.ts`](../packages/shell/tool-bash/src/index.ts)
 
 The bash tool is the model-facing consumer of the bash executor seam. A `run_in_background` run registers with the generic `ctx.jobs` runtime and is collected/stopped through the `job_*` tools from `@deepseek-ai/dsh-tool-jobs`; the `enableRunInBackground` config (default true) removes the parameter entirely when disabled.
+
+<a id="deepseek-aidsh-tool-blackboard"></a>
+
+## `@deepseek-ai/dsh-tool-blackboard`
+
+### `blackboard_add_attack_step`
+
+Append one step to the attack-path narrative on the shared blackboard: where it starts, where it lands, and how. Use `verified` for a step just executed, `hypothesis` for an inferred next move.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "from": {
+      "type": "string",
+      "description": "Where the step starts (`internet`, a host, an account)."
+    },
+    "to": {
+      "type": "string",
+      "description": "Where the step lands."
+    },
+    "via": {
+      "type": "string",
+      "description": "How: credential id plus method, or an attack name."
+    },
+    "status": {
+      "type": "string",
+      "description": "hypothesis | verified. Defaults to `verified`.",
+      "enum": [
+        "hypothesis",
+        "verified"
+      ]
+    }
+  },
+  "required": [
+    "from",
+    "to",
+    "via"
+  ]
+}
+```
+
+Source: [`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_add_credential`
+
+Record a captured credential on the shared engagement blackboard. Capturing the same account (same domain, username, and secret type) again MERGES into the existing entry — the new secret, source, and notes replace the stored ones while verification history survives. New entries start `unverified`; after an authentication check succeeds or fails, report the outcome with blackboard_verify_credential.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "username": {
+      "type": "string",
+      "description": "Account name as captured."
+    },
+    "domain": {
+      "type": "string",
+      "description": "Domain or realm the account belongs to, when known."
+    },
+    "secretType": {
+      "type": "string",
+      "description": "password (cleartext) | nthash (NT hash) | aeskey (Kerberos AES key) | ticket (Kerberos ticket).",
+      "enum": [
+        "password",
+        "nthash",
+        "aeskey",
+        "ticket"
+      ]
+    },
+    "secret": {
+      "type": "string",
+      "description": "The captured secret value."
+    },
+    "source": {
+      "type": "string",
+      "description": "Where it came from — the tool and command, an operator hand-off, or a dump artifact."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-form context (which attack produced it, expiry hints)."
+    }
+  },
+  "required": [
+    "username",
+    "secretType",
+    "secret",
+    "source"
+  ]
+}
+```
+
+Source: [`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_add_finding`
+
+Record an engagement finding (misconfiguration, attack surface, artifact) on the shared blackboard. Findings are append-only: the same issue found twice produces two entries.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "description": "Finding category (`asrep-roastable`, `share`, `path`, `misconfig`, …)."
+    },
+    "detail": {
+      "type": "string",
+      "description": "What was found, in engagement terms."
+    },
+    "evidence": {
+      "type": "string",
+      "description": "Command or artifact path that proves it."
+    }
+  },
+  "required": [
+    "kind",
+    "detail"
+  ]
+}
+```
+
+Source: [`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_list`
+
+Read the complete shared engagement blackboard: every captured credential with its verification state, every known host with the access achieved on it, every finding, and the attack path so far. Consult it BEFORE spending actions — a credential or access another flow already captured is immediately reusable.
+
+```json
+{
+  "type": "object",
+  "properties": {}
+}
+```
+
+Source: [`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_upsert_host`
+
+Record or update a host on the shared engagement blackboard, keyed by IP address: supplied fields replace stored ones, omitted fields survive. Access only ever ratchets UPWARD (none < user < admin) — reaching a host again cannot erase an earlier privilege gain.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "ip": {
+      "type": "string",
+      "description": "Primary address; the entry identity."
+    },
+    "hostname": {
+      "type": "string",
+      "description": "Resolved hostname, when known."
+    },
+    "os": {
+      "type": "string",
+      "description": "Operating system fingerprint, when known."
+    },
+    "role": {
+      "type": "string",
+      "description": "Role in the range (DC, workstation, …), when known."
+    },
+    "access": {
+      "type": "string",
+      "description": "Access level achieved: none | user | admin. Omit to leave the stored level untouched.",
+      "enum": [
+        "none",
+        "user",
+        "admin"
+      ]
+    },
+    "ownedBy": {
+      "type": "string",
+      "description": "Credential entry id (`cred-<n>`) that grants the access."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-form context."
+    }
+  },
+  "required": [
+    "ip"
+  ]
+}
+```
+
+Source: [`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+### `blackboard_verify_credential`
+
+Report the outcome of an authentication check for a stored credential: `verified` when the check succeeded (name the host or DC it succeeded against), `rejected` when it failed, `expired` when a formerly valid secret stopped working.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "The credential entry id (`cred-<n>`)."
+    },
+    "status": {
+      "type": "string",
+      "description": "verified | rejected | expired | unverified.",
+      "enum": [
+        "unverified",
+        "verified",
+        "expired",
+        "rejected"
+      ]
+    },
+    "verifiedAgainst": {
+      "type": "string",
+      "description": "The host or DC the successful check ran against; REQUIRED when status is `verified`."
+    }
+  },
+  "required": [
+    "id",
+    "status"
+  ]
+}
+```
+
+Source: [`packages/pentest/tool-blackboard/src/index.ts`](../packages/pentest/tool-blackboard/src/index.ts)
+
+The six blackboard tools are the model-facing consumer of the engagement-blackboard seam (`packages/pentest/`): each call resolves its engagement root from the calling agent session, and captured secrets are tool arguments and results by design under the engagement-lab trust boundary.
 
 <a id="deepseek-aidsh-tool-pwsh"></a>
 

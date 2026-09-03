@@ -8,6 +8,7 @@ export type AgentPresetSettingsKey =
   | 'presetPtcName' | 'presetPtcDescription'
   | 'presetMinimalName' | 'presetMinimalDescription'
   | 'presetCordisName' | 'presetCordisDescription'
+  | 'presetPentestName' | 'presetPentestDescription'
   | 'duplicate' | 'duplicateUnavailable' | 'delete' | 'presetId' | 'presetIdPlaceholder' | 'copyOf'
   | 'displayName' | 'displayNamePlaceholder'
   | 'inUse' | 'noDescription' | 'builtInGroup' | 'customGroup'
@@ -43,6 +44,9 @@ export const en: Record<AgentPresetSettingsKey, string> = {
   presetCordisName: 'Creator mode',
   presetCordisDescription:
     'Built for creating custom agent presets, with all Standard mode capabilities plus runtime inspection, plugin experiments, and preset-authoring guidance.',
+  presetPentestName: 'Pentest mode',
+  presetPentestDescription:
+    'Active Directory penetration-testing agent for authorized local labs: phased tradecraft skills, a shared credential blackboard, controlled tools first with raw-command fallback.',
   duplicate: 'Duplicate',
   duplicateUnavailable: 'This deployment has no writable preset directory',
   delete: 'Delete',
@@ -101,6 +105,8 @@ export const zh: Record<AgentPresetSettingsKey, string> = {
   presetMinimalDescription: '仅提供持久 bash 与 str_replace_editor 的双工具编码 Agent。',
   presetCordisName: '创造模式',
   presetCordisDescription: '用于创建自定义 Agent preset：具备标准模式的全部能力，并提供运行时检查、插件实验和 preset 创作指导。',
+  presetPentestName: '渗透模式',
+  presetPentestDescription: '面向本地授权靶场（如 GOAD）的域渗透测试 Agent：分阶段作战纪律、渗透技能集、凭据黑板协作，受控工具优先、裸命令降级兜底。',
   duplicate: '复制',
   duplicateUnavailable: '此部署未配置可写的预设目录',
   delete: '删除',

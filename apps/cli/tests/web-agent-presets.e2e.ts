@@ -42,7 +42,7 @@ const MINIMAL_BASH_DESCRIPTION = `Run commands in a bash shell
 /**
  * Boot the shipped Web composition, minus the rows that would bind a port,
  * touch the network, or write outside the test. Everything that decides an
- * agent's capabilities is the real thing, including both shipped presets.
+ * agent's capabilities is the real thing, including the shipped presets.
  */
 async function bootWeb(
   settingsFile: string,
@@ -212,10 +212,10 @@ describe('the shipped Web composition', () => {
     }
   })
 
-  it('supplies both shipped presets, and only those, from the system root', async () => {
+  it('supplies the shipped presets, and only those, from the system root', async () => {
     const listed = await ctx.agentPresets.list()
 
-    expect(listed.map(preset => preset.id).sort()).toEqual(['cordis', 'minimal', 'ptc', 'standard'])
+    expect(listed.map(preset => preset.id).sort()).toEqual(['cordis', 'minimal', 'pentest', 'ptc', 'standard'])
     expect(listed.every(preset => preset.trust === 'system')).toBe(true)
     expect(ctx.agentPresets.defaultId).toBe('standard')
   })
@@ -238,6 +238,42 @@ describe('the shipped Web composition', () => {
         'workflow', 'write',
       ])
       expect(ctx.commands.find(handle.agent, 'goal')).toBeDefined()
+    } finally {
+      await handle.dispose()
+    }
+  })
+
+  it('composes the pentest agent with the standard toolset plus its tradecraft skills', async () => {
+    const handle = await ctx.agents.create({
+      // Unique per run: the composition persists into the ambient DSH home,
+      // and a fixed id would collide with a log an earlier run left there.
+      sessionId: SessionId(`preset-pentest-${randomUUID()}`),
+      setup: agentCtx => ctx.agentPresets.mount(agentCtx, 'pentest').then(() => undefined),
+    })
+    try {
+      // The pentest preset duplicates standard's tool rows, so the same EXACT
+      // catalog assertion guards the copy: a row that registers into the wrong
+      // layer mounts cleanly and simply contributes nothing.
+      expect(toolNames(ctx, handle.agent).filter(name => name !== 'glob' && name !== 'grep')).toEqual([
+        'ask_user_question', 'bash', 'blackboard_add_attack_step', 'blackboard_add_credential', 'blackboard_add_finding',
+        'blackboard_list', 'blackboard_upsert_host', 'blackboard_verify_credential', 'create_goal', 'edit', 'exit_plan_mode',
+        'get_goal', 'interrupt_agent', 'job_kill', 'job_list', 'job_output', 'list_agents', 'ralph', 'read', 'read_image', 'send_message', 'skill',
+        'subagent', 'subagent_fork', 'todo_write', 'update_goal', 'web_fetch', 'web_search',
+        'workflow', 'write',
+      ])
+
+      // The bundled tradecraft skills register into THIS preset's layer of the
+      // skill registry: the pentest agent's view carries them, the global view
+      // does not.
+      const scoped = (await ctx.skills.list({ scope: handle.agent })).map(skill => skill.name)
+      for (const name of ['ad-enumeration', 'bloodhound-analysis', 'credential-handling', 'kerberos-attacks', 'lateral-movement', 'report-writing']) {
+        expect(scoped).toContain(name)
+      }
+      expect((await ctx.skills.list()).map(skill => skill.name)).not.toContain('ad-enumeration')
+
+      // The persona shadows the deployment default with the pentest identity.
+      const assembly = await ctx.systemPrompt.assemble({ scope: handle.agent })
+      expect(assembly.sections.some(section => section.text.includes('penetration-testing agent'))).toBe(true)
     } finally {
       await handle.dispose()
     }
@@ -949,7 +985,7 @@ describe('a composition that configures its own preset roots', () => {
     ])
 
     const listed = await rootsCtx.agentPresets.list()
-    expect(listed.map(preset => preset.id).sort()).toEqual(['cordis', 'minimal', 'ptc', 'standard', 'team-spec'])
+    expect(listed.map(preset => preset.id).sort()).toEqual(['cordis', 'minimal', 'pentest', 'ptc', 'standard', 'team-spec'])
     expect(listed.every(preset => preset.broken === undefined)).toBe(true)
     // The shipped root comes first: a configured directory claiming a shipped
     // id is shadowed, never the other way around.
